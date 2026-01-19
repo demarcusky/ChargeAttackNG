@@ -1,0 +1,14 @@
+# IDE / text editor profile files
+.idea
+.vs
+.vscode/settings.json
+
+# Possible C++ build output directories and files
+out
+build
+cmake-build*
+*.dll
+*.pdb
+
+# Skyrim archive files
+*.bsa
