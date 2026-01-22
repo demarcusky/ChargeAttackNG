@@ -56,3 +56,8 @@ uint32_t getKeycode(uint32_t dxScanCode) {
     }
     return dxGamepadKeycode;
 }
+
+uint64_t timestamp() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
