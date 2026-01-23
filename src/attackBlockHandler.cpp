@@ -77,7 +77,9 @@ bool isEventValid(RE::PlayerCharacter* player, RE::ButtonEvent* a_event) {
     const auto controlMap = RE::ControlMap::GetSingleton();
     if (gameUI == NULL || controlMap == NULL || (gameUI && gameUI->GameIsPaused())) return false;
     
-    if (player->IsInKillMove() || player->IsOnMount() || player->IsInMidair() || player->IsInRagdollState() || isPlayerAttacking(player)) {
+    bool isBlocking = false;
+    player->GetGraphVariableBool("IsBlocking", isBlocking);
+    if (player->IsInKillMove() || player->IsOnMount() || player->IsInMidair() || player->IsInRagdollState() || isPlayerAttacking(player) || isBlocking) {
         return false;
     }
 
@@ -91,10 +93,7 @@ bool isEventValid(RE::PlayerCharacter* player, RE::ButtonEvent* a_event) {
     }
 
     auto isLeft = isLeftButton(a_event);
-    auto weaponLeft = reinterpret_cast<RE::TESObjectWEAP*>(player->GetEquippedObject(true));
-    auto weaponRight = reinterpret_cast<RE::TESObjectWEAP*>(player->GetEquippedObject(false));
-    auto weapon = isLeft ? weaponLeft : weaponRight;
-
+    auto weapon = isLeft ? reinterpret_cast<RE::TESObjectWEAP*>(player->GetEquippedObject(true)) : reinterpret_cast<RE::TESObjectWEAP*>(player->GetEquippedObject(false));
     return isWeaponValid(weapon, isLeft);
 }
 
