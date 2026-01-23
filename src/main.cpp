@@ -1,16 +1,16 @@
 #include <SimpleIni.h>
 #include "utils.h"
 
-
-const SKSE::TaskInterface* task = nullptr;
+const SKSE::TaskInterface* tasks = nullptr;
 RE::PlayerCharacter* player;
 
-// ini Settings here
+// INI Settings
 uint64_t leftButton = 280;
 uint64_t rightButton = 281;
 bool isMouseReverse = false;
 // Rate
 
+// Action IDs
 RE::BGSAction* actionRightAttack;
 RE::BGSAction* actionLeftAttack;
 RE::BGSAction* actionDualAttack;
@@ -24,6 +24,16 @@ RE::BSAudioManager* audioManager = NULL;
 
 RE::BGSSoundDescriptorForm* powerAttackSound;
 
+// Global Variables
+float leftHoldTime = 0.0f;
+float rightHoldTime = 0.0f;
+bool indicateLeft = false;
+bool indicateRight = false;
+bool isLeftNotCharge = false;
+bool isRightNotCharge = false;
+bool isLeftDualHeld = false;
+bool isRightDualHeld = false;
+
 void loadSettings() {
     constexpr auto path = L"Data/SKSE/Plugins/ChargeAttackNG.ini";
 
@@ -33,10 +43,13 @@ void loadSettings() {
 
     leftButton = ini.GetLongValue("Input", "leftButton", 280);
     rightButton = ini.GetLongValue("Input", "rightButton", 281);
-    isMouseReverse = ini.GetBoolValue("Input", "ReverseMouseButtons", false);
-
+    isMouseReverse = ini.GetBoolValue("Input", "reverseMouseButtons", false);
     // Stamina drain rate
     // damage scale rate
+
+    ini.SetLongValue("Input", "leftButton", leftButton);
+    ini.SetLongValue("Input", "rightButton", rightButton);
+    ini.SetLongValue("Input", "reverseMouseButtons", isMouseReverse);
 
     (void)ini.SaveFile(path);
 }
@@ -49,6 +62,13 @@ bool isPlayerAttacking() {
     return false;
 }
 
+bool isWeaponValid(RE::TESObjectWEAP* weapon, bool isLeft) {
+    if (weapon == NULL) return false;
+    if (!weapon->IsWeapon() || weapon->IsBow() || weapon->IsCrossbow() || weapon->IsStaff()) return false;
+    if (isLeft && (weapon->IsTwoHandedAxe() || weapon->IsTwoHandedSword())) return false;
+    return true;
+}
+
 bool isDualWielding() {
     auto weaponLeft = reinterpret_cast<RE::TESObjectWEAP*>(player->GetEquippedObject(true));
     auto weaponRight = reinterpret_cast<RE::TESObjectWEAP*>(player->GetEquippedObject(false));
@@ -57,17 +77,11 @@ bool isDualWielding() {
 }
 
 bool isPowerAttack(float holdTime, bool isLeftHandBusy, bool isRightHandBusy, bool isBlocking) {
-    if (!isDualWielding() && (isLeftHandBusy || isRightHandBusy) && !isBlocking) return false;
-
+    if (!isDualWielding() && (isLeftHandBusy || isRightHandBusy) && !isBlocking) {
+        return false;
+    }
     auto isPowerAttack = holdTime > 0.44f; // minChargeTime, may change
     return isPowerAttack;
-}
-
-bool isWeaponValid(RE::TESObjectWEAP* weapon, bool isLeft) {
-    if (weapon == NULL) return false;
-    if (!weapon->IsWeapon() || weapon->IsBow() || weapon->IsCrossbow() || weapon->IsStaff()) return false;
-    if (isLeft && (weapon->IsTwoHandedAxe() || weapon->IsTwoHandedSword())) return false;
-    return true;
 }
 
 bool isLeftButton(RE::ButtonEvent* a_event) {
@@ -104,7 +118,7 @@ bool isEventValid(RE::ButtonEvent* a_event) {
     if (player->IsInKillMove() || player->IsOnMount() || player->IsSneaking() || player->IsRunning() || player->IsInMidair() || player->IsInRagdollState()) {
         return false;
     }
-    
+
     auto playerState = player->AsActorState();
     if (playerState == NULL || (playerState && (playerState->GetWeaponState() != RE::WEAPON_STATE::kDrawn ||
         playerState->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal ||
@@ -113,7 +127,7 @@ bool isEventValid(RE::ButtonEvent* a_event) {
     {
         return false;
     }
-    
+
     auto isLeft = isLeftButton(a_event);
     auto weaponLeft = reinterpret_cast<RE::TESObjectWEAP*>(player->GetEquippedObject(true));
     auto weaponRight = reinterpret_cast<RE::TESObjectWEAP*>(player->GetEquippedObject(false));
@@ -132,19 +146,29 @@ public:
 	void ProcessButton(RE::ButtonEvent* a_event, void* a_data) {
         if (isEventValid(a_event)) {
             if (a_event->IsDown() || a_event->IsHeld()) {
+                SKSE::log::info("Button press/hold...");
                 processHold(a_event);
             }
             if (a_event->IsUp()) {
+                SKSE::log::info("Button release...");
                 processRelease(a_event);
             }
-        } else {
-            // if not doing a power attack
-            if (isButtonEventValid(a_event)) {
-                auto isLeft = isLeftButton(a_event);
-                isLeft ? isLeftNotCharge = a_event->IsHeld() : isRightNotCharge = a_event->IsHeld();
-                setIndication(indicateLeft, isLeftNotCharge);
-                setIndication(indicateRight, isRightNotCharge);
+            return;
+        }
+
+        // if not doing a power attack
+        if (isButtonEventValid(a_event)) {
+            auto isLeft = isLeftButton(a_event);
+            bool alternate;
+            if (isLeft) {
+                isLeftNotCharge = a_event->IsHeld();
+                alternate = isLeftNotCharge;
+            } else {
+                isRightNotCharge = a_event->IsHeld();
+                alternate = isRightNotCharge;
             }
+
+            if (alternate) setIndication(isLeft, false);
         }
 
 		FnProcessButton fn = fnHash.at(*(uintptr_t*)this);
@@ -161,17 +185,12 @@ public:
 private:
 	static std::unordered_map<uintptr_t, FnProcessButton> fnHash;
 
-    float leftHoldTime = 0.0f;
-    float rightHoldTime = 0.0f;
-    bool indicateLeft = false;
-    bool indicateRight = false;
-    bool isLeftNotCharge = false;
-    bool isRightNotCharge = false;
-    bool isLeftDualHeld = false;
-    bool isRightDualHeld = false;
-
-    void setIndication(bool hand, bool val) {
-        hand = val;
+    void setIndication(bool isLeft, bool val) {
+        if (isLeft) {
+            indicateLeft = val;
+        } else {
+            indicateRight = val;
+        }
     }
 
     void indicatePowerAttack(bool isLeft) {
@@ -183,6 +202,7 @@ private:
         if (!isPlayerAttacking() && isPowerAttack(holdTime, isLeftNotCharge, isRightNotCharge, isBlocking)) {
             if (indicateLeft || indicateRight) return; // already charging
             setIndication(isLeft, true);
+            SKSE::log::info("Initiating charge attack...");
         } else {
             setIndication(isLeft, false);
         }
@@ -200,23 +220,24 @@ private:
         return isPowerAttack ? actionRightPowerAttack : actionRightAttack;
     }
 
-    void PerformAction(RE::BGSAction* action, RE::Actor* actor, int index) {
-        if (task == NULL) {
-            // logger::info("Tasks not initialized.");
-
+    void performAction(RE::BGSAction* action, RE::Actor* actor) {
+        if (tasks == NULL) {
+            SKSE::log::info("ERROR: Tasks not initialised...");
             return;
         }
-        
-        task->AddTask([action, actor, index]() {
+
+        tasks->AddTask([action, actor]() {
             std::unique_ptr<RE::TESActionData> data(RE::TESActionData::Create());
             data->source = RE::NiPointer<RE::TESObjectREFR>(actor);
             data->action = action;
 
             typedef bool func_t(RE::TESActionData*);
             REL::Relocation<func_t> func{RELOCATION_ID(40551, 41557)};
-            bool succ = func(data.get());
 
-            // if (!succ && index < ACTION_MAX_RETRY) { }
+            bool success = func(data.get());
+            if (!success) {
+                SKSE::log::info("Action failed: {}", (void*)action);
+            }
         });
     }
 
@@ -224,9 +245,11 @@ private:
         auto isLeft = isLeftButton(button);
         if (isLeft) {
             leftHoldTime = button->HeldDuration();
+            isLeftNotCharge = false;
             isRightDualHeld = isRightDualHeld || rightHoldTime > 0.0f;
         } else {
             rightHoldTime = button->HeldDuration();
+            isRightNotCharge = false;
             isLeftDualHeld = isLeftDualHeld || leftHoldTime > 0.0f;
         }
         indicatePowerAttack(isLeft);
@@ -261,12 +284,13 @@ private:
             shouldAttack = tempLeftHoldTime == 0.0f;
         }
 
-        timeDiff = leftTimestamp - rightTimestamp;
+        timeDiff = _abs64(leftTimestamp - rightTimestamp);
 
         bool isBlocking = false;
         player->GetGraphVariableBool("IsBlocking", isBlocking);
 
         if (shouldAttack || (timeDiff == 0 && isLeft)) {
+            SKSE::log::info("Starting attack action...");
             setIndication(isLeft, false);
 
             auto isDualHeld = isLeft ? tempIsRightDualHeld : tempIsLeftDualHeld;
@@ -277,21 +301,19 @@ private:
             auto attackAction = getAttackAction(isLeft, timeDiff, dualWielding, isDualHeld, false);
 
             if (!isPowAttack || (isPowAttack && !isAttacking)) {
-                PerformAction(attackAction, player, false);
-
-                if (!isLeft && !isPowerAttack && isBlocking) {
-                    PerformAction(actionRightRelease, player, false);
+                performAction(attackAction, player);
+                if (!isLeft && !isPowAttack && isBlocking) {
+                    performAction(actionRightRelease, player);
                 }
             }
 
             if (isPowAttack && !isAttacking && (!isBlocking || dualWielding)) {
                 attackAction = getAttackAction(isLeft, timeDiff, dualWielding, isDualHeld, true);
-
-                PerformAction(attackAction, player, true);
+                performAction(attackAction, player);
             }
 
             if (!(attackAction == actionDualAttack || attackAction == actionDualPowerAttack)) {
-                PerformAction(isLeft ? actionLeftRelease : actionRightAttack, player, false);  
+                performAction(isLeft ? actionLeftRelease : actionRightAttack, player);
             }
         }
     }
@@ -324,7 +346,7 @@ void onMessage(SKSE::MessagingInterface::Message* msg) {
                 if (p.iscrouching || p.isSprinting || p.isRidingHorse) {
                     trigger vanilla actions
                 }
-                
+ 
                 while player is holding power attack button {
                     slow movement
                     drain stamina at a fixed rate (possibly customisable with MCM?)
@@ -338,16 +360,35 @@ void onMessage(SKSE::MessagingInterface::Message* msg) {
     }
 }
 
+void initLog() {
+    auto logsFolder = SKSE::log::log_directory();
+    if (!logsFolder) SKSE::stl::report_and_fail("SKSE log_directory not provided.");
+
+    auto pluginName = SKSE::PluginDeclaration::GetSingleton()->GetName();
+    auto logFilePath = *logsFolder / std::format("{}.log", pluginName);
+    auto fileLoggerPtr = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logFilePath.string(), true);
+    auto loggerPtr = std::make_shared<spdlog::logger>("log", std::move(fileLoggerPtr));
+
+    spdlog::set_default_logger(std::move(loggerPtr));
+    spdlog::set_level(spdlog::level::trace);
+    spdlog::flush_on(spdlog::level::trace);
+    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [%l] [%t] [%s:%#] %v");
+}
+
 /*
 SKSE function run on startup.
 */
 SKSEPluginLoad(const SKSE::LoadInterface *skse) {
-    Init(skse);
+    initLog();
+    SKSE::log::info("Game version : {}", skse->RuntimeVersion().string());
 
+    SKSE::Init(skse);
+    
     loadSettings();
+    SKSE::log::info("Settings loaded...");
 
-    auto task = SKSE::GetTaskInterface();
-	auto message = SKSE::GetMessagingInterface();
-	message->RegisterListener(onMessage);
+    tasks = SKSE::GetTaskInterface();
+	SKSE::GetMessagingInterface()->RegisterListener(onMessage);
+
     return true;
 }
