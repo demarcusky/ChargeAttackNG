@@ -108,10 +108,174 @@ bool isEventValid(RE::PlayerCharacter* player, const RE::ButtonEvent* a_event) {
 HANDLER FUNCTIONS
 
 */
-void HookAttackBlockHandler::beginCharge(const RE::ButtonEvent *button) {
-    auto holdTime = button->HeldDuration();
 
-    if (holdTime < 0.4f) return;
+void HookAttackBlockHandler::setIndication(bool isLeft, bool val) {
+    if (isLeft) {
+        indicateLeft = val;
+    } else {
+        indicateRight = val;
+    }
+}
+
+void HookAttackBlockHandler::indicatePowerAttack(bool isLeft) {
+    float holdTime = isLeft ? leftHoldTime : rightHoldTime;
+
+    bool isBlocking = false;
+    player->GetGraphVariableBool("IsBlocking", isBlocking);
+
+    if (!isPlayerAttacking(player) && isPowerAttack(player, holdTime, isLeftNotCharge, isRightNotCharge, isBlocking)) {
+        beginCharge(holdTime);
+        if (indicateLeft || indicateRight) return; // already charging
+        setIndication(isLeft, true);
+        SKSE::log::info("Initiating charge attack...");
+    } else {
+        setIndication(isLeft, false);
+    }
+}
+
+RE::BGSAction* HookAttackBlockHandler::getAttackAction(bool isLeft, uint64_t timeDiff, bool isDualWielding, bool isDualHeld, bool isPowerAttack) {
+    if (isDualWielding && isDualHeld && timeDiff < 130) {
+        return isPowerAttack ? actionDualPowerAttack : actionDualAttack;
+    }
+
+    if (isLeft) {
+        return isPowerAttack ? actionLeftPowerAttack : actionLeftAttack;
+    }
+
+    return isPowerAttack ? actionRightPowerAttack : actionRightAttack;
+}
+
+void HookAttackBlockHandler::performAction(RE::BGSAction* action, RE::Actor* actor) {
+    if (tasks == NULL) {
+        SKSE::log::info("ERROR: Tasks not initialised...");
+        return;
+    }
+
+    tasks->AddTask([action, actor]() {
+        std::unique_ptr<RE::TESActionData> data(RE::TESActionData::Create());
+        data->source = RE::NiPointer<RE::TESObjectREFR>(actor);
+        data->action = action;
+
+        typedef bool func_t(RE::TESActionData*);
+        REL::Relocation<func_t> func{RELOCATION_ID(40551, 41557)};
+        bool success = func(data.get());
+        if (!success) {
+            SKSE::log::info("Action failed: {}", (void*)action);
+        }
+    });
+}
+
+void HookAttackBlockHandler::processHold(RE::ButtonEvent *button) {
+    auto isLeft = isLeftButton(button);
+    if (isLeft) {
+        leftHoldTime = button->HeldDuration();
+        isLeftNotCharge = false;
+        isRightDualHeld = isRightDualHeld || rightHoldTime > 0.0f;
+    } else {
+        rightHoldTime = button->HeldDuration();
+        isRightNotCharge = false;
+        isLeftDualHeld = isLeftDualHeld || leftHoldTime > 0.0f;
+    }
+    indicatePowerAttack(isLeft);
+}
+
+void HookAttackBlockHandler::processRelease(RE::ButtonEvent *button) {
+    auto isLeft = isLeftButton(button);
+
+    auto tempLeftHoldTime = leftHoldTime;
+    auto tempRightHoldTime = rightHoldTime;
+    auto tempIsLeftDualHeld = isLeftDualHeld;
+    auto tempIsRightDualHeld = isRightDualHeld;
+    uint64_t leftTimestamp = 0;
+    uint64_t rightTimestamp = 0;
+
+    auto dualWielding = isDualWielding(player);
+
+    auto shouldAttack = false;
+    uint64_t timeDiff = 0;
+
+    if (isLeft) {
+        leftHoldTime = 0.0f;
+        leftTimestamp = timestamp();
+        isRightDualHeld = false;
+        shouldAttack = tempRightHoldTime == 0.0f;
+    } else {
+        rightHoldTime = 0.0f;
+        rightTimestamp = timestamp();
+        isLeftDualHeld = false;
+        shouldAttack = tempLeftHoldTime == 0.0f;
+    }
+
+    timeDiff = _abs64(leftTimestamp - rightTimestamp);
+
+    bool isBlocking = false;
+    player->GetGraphVariableBool("IsBlocking", isBlocking);
+
+    if (shouldAttack || (timeDiff == 0 && isLeft)) {
+        SKSE::log::info("Starting attack action...");
+        setIndication(isLeft, false);
+
+        auto isDualHeld = isLeft ? tempIsRightDualHeld : tempIsLeftDualHeld;
+        float maxHoldTime = std::max(tempLeftHoldTime, tempRightHoldTime);
+
+        auto isAttacking = isPlayerAttacking(player);
+        auto isPowAttack = isPowerAttack(player, maxHoldTime, isLeftNotCharge, isRightNotCharge, isBlocking);
+        auto attackAction = getAttackAction(isLeft, timeDiff, dualWielding, isDualHeld, false);
+
+        if (!isPowAttack || (isPowAttack && !isAttacking)) {
+            performAction(attackAction, player);
+            if (!isLeft && !isPowAttack && isBlocking) {
+                performAction(actionRightRelease, player);
+            }
+        }
+
+        if (isPowAttack && !isAttacking && (!isBlocking || dualWielding)) {
+            attackAction = getAttackAction(isLeft, timeDiff, dualWielding, isDualHeld, true);
+            performAction(attackAction, player);
+        }
+
+        if (!(attackAction == actionDualAttack || attackAction == actionDualPowerAttack)) {
+            performAction(isLeft ? actionLeftRelease : actionRightAttack, player);
+        }
+    }
+}
+
+void HookAttackBlockHandler::ProcessButton(RE::ButtonEvent* a_event, void* a_data) {
+    if (isEventValid(player, a_event)) {
+        if (a_event->IsDown() || a_event->IsHeld()) {
+            SKSE::log::info("Button press/hold...");
+            processHold(a_event);
+        }
+        if (a_event->IsUp()) {
+            SKSE::log::info("Button release...");
+            processRelease(a_event);
+        }
+        return;
+    }
+
+    // if not doing a power attack
+    if (isButtonEventValid(a_event)) {
+        auto isLeft = isLeftButton(a_event);
+        bool alternate;
+        if (isLeft) {
+            isLeftNotCharge = a_event->IsHeld();
+            alternate = isLeftNotCharge;
+        } else {
+            isRightNotCharge = a_event->IsHeld();
+            alternate = isRightNotCharge;
+        }
+
+        if (alternate) setIndication(isLeft, false);
+    }
+
+    FnProcessButton fn = GetFnHash<FnProcessButton>().at(*(uintptr_t*)this);
+    if (fn) (this->*fn)(a_event, a_data);
+}
+
+void HookAttackBlockHandler::beginCharge(float holdTime) {
+    if (holdTime < 0.44f) return;
+
+    SKSE::log::info("Charging...");
 
     float slowdownProgress = std::min((holdTime - 0.6f) / 4.4f, 1.0f); 
     float t = 1.0f - std::pow(1.0f - slowdownProgress, 3.0f);
@@ -130,25 +294,28 @@ void HookAttackBlockHandler::beginCharge(const RE::ButtonEvent *button) {
     }
 }
 
-void HookAttackBlockHandler::UpdateHeldStateActive(const RE::ButtonEvent* a_event) {
+/*void HookAttackBlockHandler::UpdateHeldStateActive(const RE::ButtonEvent* a_event) {
     if (isEventValid(player, a_event)) {
         SKSE::log::info("Holding button...");
         beginCharge(a_event);
         return;
     }
 
-    /*if (player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult) != currSpeed) {
+    if (player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult) != currSpeed) {
         player->AsActorValueOwner()->SetActorValue(RE::ActorValue::kSpeedMult, currSpeed);
-    }*/
+    }
     
     FnUpdateHeldStateActive fn = GetFnHash<FnUpdateHeldStateActive>().at(*(uintptr_t*)this);
     if (fn) (this->*fn)(a_event);
-}
+}*/
+
 
 void HookAttackBlockHandler::Hook() {
     REL::Relocation<uintptr_t> vtable{ RE::VTABLE_AttackBlockHandler[0] };
-    FnUpdateHeldStateActive fnUpdateHeldStateActive = SKSE::stl::unrestricted_cast<FnUpdateHeldStateActive>(vtable.write_vfunc(5, &HookAttackBlockHandler::UpdateHeldStateActive));
-    GetFnHash<FnUpdateHeldStateActive>().insert(std::pair<uintptr_t, FnUpdateHeldStateActive>(vtable.address(), fnUpdateHeldStateActive));
+    FnProcessButton fn = SKSE::stl::unrestricted_cast<FnProcessButton>(vtable.write_vfunc(4, &HookAttackBlockHandler::ProcessButton));
+    GetFnHash<FnProcessButton>().insert(std::pair<uintptr_t, FnProcessButton>(vtable.address(), fn));
+   // FnUpdateHeldStateActive fnUpdateHeldStateActive = SKSE::stl::unrestricted_cast<FnUpdateHeldStateActive>(vtable.write_vfunc(5, &HookAttackBlockHandler::UpdateHeldStateActive));
+    //GetFnHash<FnUpdateHeldStateActive>().insert(std::pair<uintptr_t, FnUpdateHeldStateActive>(vtable.address(), fnUpdateHeldStateActive));
 }
 
 void HookAttackBlockHandler::initialise() {

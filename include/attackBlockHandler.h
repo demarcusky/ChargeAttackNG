@@ -23,6 +23,7 @@ public:
 
     static void initialise();
     static void loadSettings();
+    void ProcessButton(RE::ButtonEvent* a_event, void* a_data);
     void UpdateHeldStateActive(const RE::ButtonEvent* a_event);
 	static void Hook();
 private:
@@ -38,5 +39,11 @@ private:
     static inline RE::BGSAction* actionLeftRelease = nullptr;
     static inline RE::BGSAction* actionRightRelease = nullptr;
 
-    void beginCharge(const RE::ButtonEvent *button);
+    void setIndication(bool isLeft, bool val);
+    void indicatePowerAttack(bool isLeft);
+    RE::BGSAction* getAttackAction(bool isLeft, uint64_t timeDiff, bool isDualWielding, bool isDualHeld, bool isPowerAttack);
+    void performAction(RE::BGSAction* action, RE::Actor* actor);
+    void processHold(RE::ButtonEvent *button);
+    void processRelease(RE::ButtonEvent *button);
+    void beginCharge(float holdTime);
 };
