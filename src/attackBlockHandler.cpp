@@ -136,6 +136,10 @@ void HookAttackBlockHandler::UpdateHeldStateActive(const RE::ButtonEvent* a_even
         beginCharge(a_event);
         return;
     }
+
+    /*if (player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult) != currSpeed) {
+        player->AsActorValueOwner()->SetActorValue(RE::ActorValue::kSpeedMult, currSpeed);
+    }*/
     
     FnUpdateHeldStateActive fn = GetFnHash<FnUpdateHeldStateActive>().at(*(uintptr_t*)this);
     if (fn) (this->*fn)(a_event);
