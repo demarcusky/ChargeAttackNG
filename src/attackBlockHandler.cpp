@@ -7,8 +7,6 @@ bool indicateLeft = false;
 bool indicateRight = false;
 bool isLeftNotCharge = false;
 bool isRightNotCharge = false;
-bool isLeftDualHeld = false;
-bool isRightDualHeld = false;
 
 uint64_t leftRelease = 0;
 uint64_t rightRelease = 0;
@@ -313,6 +311,7 @@ void HookAttackBlockHandler::processRelease(RE::ButtonEvent *button) {
         bCharging = false;
 
         RE::BSPointerHandle<RE::Actor> nullHandle;
+        // remove slowdown
         player->GetMagicTarget()->DispelEffect(CreateSlowSpell(), nullHandle);
     }
 }
