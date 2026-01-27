@@ -10,6 +10,10 @@ bool isRightNotCharge = false;
 bool isLeftDualHeld = false;
 bool isRightDualHeld = false;
 
+uint64_t leftRelease = 0;
+uint64_t rightRelease = 0;
+
+bool bCharging = false;
 float currSpeed = 0.0f;
 
 template <typename T>
@@ -46,19 +50,11 @@ bool isDualWielding(RE::PlayerCharacter* player) {
     return isWeaponValid(weaponLeft, true) && isWeaponValid(weaponRight, false);
 }
 
-bool isPowerAttack(RE::PlayerCharacter* player, float holdTime, bool isLeftHandBusy, bool isRightHandBusy, bool isBlocking) {
-    if (!isDualWielding(player) && (isLeftHandBusy || isRightHandBusy) && !isBlocking) return false;
-    auto isPowerAttack = holdTime > 0.44f; // minChargeTime, may change
-    return isPowerAttack;
-}
-
 bool isLeftButton(const RE::ButtonEvent* a_event) {
     auto device = a_event->device.get();
     auto keyMask = a_event->GetIDCode();
-
     if (device == RE::INPUT_DEVICE::kMouse && keyMask == (uint32_t)(HookAttackBlockHandler::Settings::isMouseReverse ? 0 : 1)) return true;
     if (device == RE::INPUT_DEVICE::kGamepad && getKeycode(keyMask) == HookAttackBlockHandler::Settings::leftButton) return true;
-
     return false;
 }
 
@@ -76,7 +72,113 @@ bool isButtonEventValid(const RE::ButtonEvent* a_event) {
     return true;
 }
 
-bool isEventValid(RE::PlayerCharacter* player, const RE::ButtonEvent* a_event) {
+RE::EffectSetting* CreateSlowEffect() {
+    static RE::EffectSetting* slowEffect = nullptr;
+    if (slowEffect) return slowEffect;
+
+    auto factory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::EffectSetting>();
+    if (!factory) return nullptr;
+
+    slowEffect = factory->Create();
+    if (!slowEffect) {
+        SKSE::log::error("Failed to create slow effect");
+        return nullptr;
+    }
+
+    slowEffect->data.flags.set(
+        RE::EffectSetting::EffectSettingData::Flag::kRecover,
+        RE::EffectSetting::EffectSettingData::Flag::kDetrimental,
+        RE::EffectSetting::EffectSettingData::Flag::kNoHitEvent,
+        RE::EffectSetting::EffectSettingData::Flag::kNoDuration,
+        RE::EffectSetting::EffectSettingData::Flag::kNoArea,
+        RE::EffectSetting::EffectSettingData::Flag::kNoRecast,
+        RE::EffectSetting::EffectSettingData::Flag::kPainless,
+        RE::EffectSetting::EffectSettingData::Flag::kNoHitEffect,
+        RE::EffectSetting::EffectSettingData::Flag::kNoDeathDispel
+    );
+    slowEffect->data.baseCost = 0.0f;
+    slowEffect->data.associatedForm = RE::TESForm::LookupByID(0xb729e);
+    slowEffect->data.associatedSkill = RE::ActorValue::kNone;
+    slowEffect->data.resistVariable = RE::ActorValue::kNone;
+    slowEffect->data.numCounterEffects = 0;
+    slowEffect->data.castingArt = nullptr;
+    slowEffect->data.taperWeight = 0.0f;
+    slowEffect->data.enchantShader = nullptr;
+    slowEffect->data.minimumSkill = 0;
+    slowEffect->data.spellmakingArea = 0;
+    slowEffect->data.spellmakingChargeTime = 0.0f;
+    slowEffect->data.taperCurve = 0.0f;
+    slowEffect->data.taperDuration = 0.0f;
+    slowEffect->data.secondAVWeight = 0.0f;
+    
+    slowEffect->data.archetype = RE::EffectArchetypes::ArchetypeID::kPeakValueModifier;
+    slowEffect->data.primaryAV = RE::ActorValue::kSpeedMult;
+    slowEffect->data.projectileBase = nullptr;
+    slowEffect->data.explosion = nullptr;
+    slowEffect->data.castingType = RE::MagicSystem::CastingType::kConstantEffect;
+    slowEffect->data.delivery = RE::MagicSystem::Delivery::kSelf;
+    slowEffect->data.secondaryAV = RE::ActorValue::kNone;
+    slowEffect->data.castingArt = nullptr;
+    slowEffect->data.hitEffectArt = nullptr;
+    slowEffect->data.impactDataSet = nullptr;
+    slowEffect->data.skillUsageMult = 0.0f;
+    slowEffect->data.dualCastData = nullptr;
+    slowEffect->data.dualCastScale = 1.0f;
+    slowEffect->data.enchantEffectArt = nullptr;
+    slowEffect->data.hitVisuals = nullptr;
+    slowEffect->data.enchantVisuals = nullptr;
+    slowEffect->data.equipAbility = nullptr;
+    slowEffect->data.imageSpaceMod = nullptr;
+    slowEffect->data.perk = nullptr;
+    slowEffect->data.castingSoundLevel = RE::SOUND_LEVEL::kSilent;
+    slowEffect->data.aiScore = 0.0f;
+    slowEffect->data.aiDelayTimer = 0.0f;
+
+    return slowEffect;
+}
+
+RE::SpellItem* CreateSlowSpell() {
+    static RE::SpellItem* slowSpell = nullptr;
+
+    if (slowSpell) return slowSpell;
+
+    auto factory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::SpellItem>();
+    if (!factory) return nullptr;
+    
+    slowSpell = factory->Create();
+    if (!slowSpell) return nullptr;
+    slowSpell->data.costOverride = 0;
+    slowSpell->data.flags.set(RE::SpellItem::SpellFlag::kNoAbsorb, RE::SpellItem::SpellFlag::kIgnoreResistance);
+    slowSpell->data.spellType = RE::MagicSystem::SpellType::kAbility;
+    slowSpell->data.chargeTime = 0.0;
+    slowSpell->data.castingType = RE::MagicSystem::CastingType::kConstantEffect;
+    slowSpell->data.delivery = RE::MagicSystem::Delivery::kSelf;
+    slowSpell->data.castDuration = 0.0f;
+    slowSpell->data.range = 0.0f;
+    slowSpell->data.castingPerk = nullptr;
+
+    auto slowEffect = CreateSlowEffect();
+    if (slowEffect) {
+        auto newEffect = new RE::Effect();
+        newEffect->baseEffect = slowEffect;
+        newEffect->effectItem.magnitude = 50.0f;  // 50% slow
+        newEffect->effectItem.area = 0;
+        newEffect->effectItem.duration = 99999;  // 5 seconds
+        newEffect->cost = 0.0f;
+        
+        slowSpell->effects.push_back(newEffect);
+    }
+    
+    return slowSpell;
+}
+
+/*
+
+HANDLER FUNCTIONS
+
+*/
+
+bool HookAttackBlockHandler::isAttackEvent(const RE::ButtonEvent* a_event) {
     if (!isButtonEventValid(a_event)) return false;
     
     const auto gameUI = RE::UI::GetSingleton();
@@ -103,12 +205,6 @@ bool isEventValid(RE::PlayerCharacter* player, const RE::ButtonEvent* a_event) {
     return isWeaponValid(weapon, isLeft);
 }
 
-/*
-
-HANDLER FUNCTIONS
-
-*/
-
 void HookAttackBlockHandler::setIndication(bool isLeft, bool val) {
     if (isLeft) {
         indicateLeft = val;
@@ -117,32 +213,32 @@ void HookAttackBlockHandler::setIndication(bool isLeft, bool val) {
     }
 }
 
-void HookAttackBlockHandler::indicatePowerAttack(bool isLeft) {
-    float holdTime = isLeft ? leftHoldTime : rightHoldTime;
-
-    bool isBlocking = false;
-    player->GetGraphVariableBool("IsBlocking", isBlocking);
-
-    if (!isPlayerAttacking(player) && isPowerAttack(player, holdTime, isLeftNotCharge, isRightNotCharge, isBlocking)) {
-        beginCharge(holdTime);
-        if (indicateLeft || indicateRight) return; // already charging
-        setIndication(isLeft, true);
-        SKSE::log::info("Initiating charge attack...");
-    } else {
-        setIndication(isLeft, false);
-    }
+RE::BGSAction* HookAttackBlockHandler::getAttackAction(bool isLeft, bool isDualAttack, float holdTime) {
+    bool isPowerAttack = holdTime >= Settings::minHoldTime;
+    if (isDualAttack) return isPowerAttack ? actionDualPowerAttack : actionDualAttack;
+    if (isLeft) return isPowerAttack  ? actionLeftPowerAttack : actionLeftAttack;
+    return isPowerAttack ? actionRightPowerAttack : actionRightAttack;
 }
 
-RE::BGSAction* HookAttackBlockHandler::getAttackAction(bool isLeft, uint64_t timeDiff, bool isDualWielding, bool isDualHeld, bool isPowerAttack) {
-    if (isDualWielding && isDualHeld && timeDiff < 130) {
-        return isPowerAttack ? actionDualPowerAttack : actionDualAttack;
-    }
+void HookAttackBlockHandler::charge(float holdTime) {
+    if (holdTime < Settings::minHoldTime) return;
+    
+    if (!bCharging) {
+        bCharging = true;
+        SKSE::log::info("Charging...");
 
-    if (isLeft) {
-        return isPowerAttack ? actionLeftPowerAttack : actionLeftAttack;
+        auto slowSpell = CreateSlowSpell();
+        auto caster = player->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
+        caster->CastSpellImmediate(
+            slowSpell,
+            false,
+            player,
+            1.0f,
+            false,
+            0.0f,
+            nullptr
+        );
     }
-
-    return isPowerAttack ? actionRightPowerAttack : actionRightAttack;
 }
 
 void HookAttackBlockHandler::performAction(RE::BGSAction* action, RE::Actor* actor) {
@@ -169,153 +265,78 @@ void HookAttackBlockHandler::processHold(RE::ButtonEvent *button) {
     auto isLeft = isLeftButton(button);
     if (isLeft) {
         leftHoldTime = button->HeldDuration();
-        isLeftNotCharge = false;
-        isRightDualHeld = isRightDualHeld || rightHoldTime > 0.0f;
     } else {
         rightHoldTime = button->HeldDuration();
-        isRightNotCharge = false;
-        isLeftDualHeld = isLeftDualHeld || leftHoldTime > 0.0f;
     }
-    indicatePowerAttack(isLeft);
+
+    float holdTime = isLeft ? leftHoldTime : rightHoldTime;
+    if (!bCharging) {
+        setIndication(isLeft, true);
+        SKSE::log::info("Initiating charge attack...");
+    }
+    charge(holdTime);
+
 }
 
 void HookAttackBlockHandler::processRelease(RE::ButtonEvent *button) {
     auto isLeft = isLeftButton(button);
 
-    auto tempLeftHoldTime = leftHoldTime;
-    auto tempRightHoldTime = rightHoldTime;
-    auto tempIsLeftDualHeld = isLeftDualHeld;
-    auto tempIsRightDualHeld = isRightDualHeld;
-    uint64_t leftTimestamp = 0;
-    uint64_t rightTimestamp = 0;
-
-    auto dualWielding = isDualWielding(player);
-
-    auto shouldAttack = false;
-    uint64_t timeDiff = 0;
-
+    auto holdDuration = isLeft ? leftHoldTime : rightHoldTime;
     if (isLeft) {
-        leftHoldTime = 0.0f;
-        leftTimestamp = timestamp();
-        isRightDualHeld = false;
-        shouldAttack = tempRightHoldTime == 0.0f;
+        leftHoldTime = 0;
+        leftRelease = timestamp();
     } else {
-        rightHoldTime = 0.0f;
-        rightTimestamp = timestamp();
-        isLeftDualHeld = false;
-        shouldAttack = tempLeftHoldTime == 0.0f;
+        rightHoldTime = 0;
+        rightRelease = timestamp();
     }
 
-    timeDiff = _abs64(leftTimestamp - rightTimestamp);
+    uint64_t timeDiff = _abs64(leftRelease - rightRelease);
 
-    bool isBlocking = false;
-    player->GetGraphVariableBool("IsBlocking", isBlocking);
-
-    if (shouldAttack || (timeDiff == 0 && isLeft)) {
-        SKSE::log::info("Starting attack action...");
-        setIndication(isLeft, false);
-
-        auto isDualHeld = isLeft ? tempIsRightDualHeld : tempIsLeftDualHeld;
-        float maxHoldTime = std::max(tempLeftHoldTime, tempRightHoldTime);
-
-        auto isAttacking = isPlayerAttacking(player);
-        auto isPowAttack = isPowerAttack(player, maxHoldTime, isLeftNotCharge, isRightNotCharge, isBlocking);
-        auto attackAction = getAttackAction(isLeft, timeDiff, dualWielding, isDualHeld, false);
-
-        if (!isPowAttack || (isPowAttack && !isAttacking)) {
-            performAction(attackAction, player);
-            if (!isLeft && !isPowAttack && isBlocking) {
-                performAction(actionRightRelease, player);
-            }
+    constexpr uint64_t DUAL_ATTACK_WINDOW = 130; // 130ms
+    bool isDualAttack = (timeDiff <= DUAL_ATTACK_WINDOW) && isDualWielding(player) && (leftRelease > 0 && rightRelease > 0);
+    
+    if (!isDualAttack || (isDualAttack && !isLeft)) {
+        SKSE::log::info("Starting attack action... (dual: {})", isDualAttack);
+        
+        auto attackAction = getAttackAction(isLeft, isDualAttack, holdDuration);
+        performAction(attackAction, player);
+        
+        if (isDualAttack) {
+            leftRelease = 0;
+            rightRelease = 0;
         }
+    }
 
-        if (isPowAttack && !isAttacking && (!isBlocking || dualWielding)) {
-            attackAction = getAttackAction(isLeft, timeDiff, dualWielding, isDualHeld, true);
-            performAction(attackAction, player);
-        }
+    // Cleanup
+    setIndication(isLeft, false);
+    if (bCharging) {
+        bCharging = false;
 
-        if (!(attackAction == actionDualAttack || attackAction == actionDualPowerAttack)) {
-            performAction(isLeft ? actionLeftRelease : actionRightAttack, player);
-        }
+        RE::BSPointerHandle<RE::Actor> nullHandle;
+        player->GetMagicTarget()->DispelEffect(CreateSlowSpell(), nullHandle);
     }
 }
 
 void HookAttackBlockHandler::ProcessButton(RE::ButtonEvent* a_event, void* a_data) {
-    if (isEventValid(player, a_event)) {
-        if (a_event->IsDown() || a_event->IsHeld()) {
-            SKSE::log::info("Button press/hold...");
+    if (isAttackEvent(a_event)) {
+        if (a_event->IsHeld()) {
+            SKSE::log::info("Button held...");
             processHold(a_event);
-        }
-        if (a_event->IsUp()) {
-            SKSE::log::info("Button release...");
+        } else if (a_event->IsUp()) {
+            SKSE::log::info("Button released...");
             processRelease(a_event);
         }
         return;
-    }
-
-    // if not doing a power attack
-    if (isButtonEventValid(a_event)) {
-        auto isLeft = isLeftButton(a_event);
-        bool alternate;
-        if (isLeft) {
-            isLeftNotCharge = a_event->IsHeld();
-            alternate = isLeftNotCharge;
-        } else {
-            isRightNotCharge = a_event->IsHeld();
-            alternate = isRightNotCharge;
-        }
-
-        if (alternate) setIndication(isLeft, false);
     }
 
     FnProcessButton fn = GetFnHash<FnProcessButton>().at(*(uintptr_t*)this);
     if (fn) (this->*fn)(a_event, a_data);
 }
 
-void HookAttackBlockHandler::beginCharge(float holdTime) {
-    if (holdTime < 0.44f) return;
-
-    SKSE::log::info("Charging...");
-
-    float slowdownProgress = std::min((holdTime - 0.6f) / 4.4f, 1.0f); 
-    float t = 1.0f - std::pow(1.0f - slowdownProgress, 3.0f);
-    float newSpeed = 1.0f - (0.95f * t);
-
-    player->AsActorValueOwner()->SetActorValue(RE::ActorValue::kSpeedMult, newSpeed);
-
-    // force state change to refresh speed
-    const float before = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kCarryWeight);
-    player->AsActorValueOwner()->ModActorValue(RE::ActorValue::kCarryWeight, +0.001f);
-    player->AsActorValueOwner()->ModActorValue(RE::ActorValue::kCarryWeight, -0.001f);
-    const float after = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kCarryWeight);
-    const float diff = after - before;
-    if (std::fabs(diff) > 1e-6f) {
-        player->AsActorValueOwner()->ModActorValue(RE::ActorValue::kCarryWeight, -diff);
-    }
-}
-
-/*void HookAttackBlockHandler::UpdateHeldStateActive(const RE::ButtonEvent* a_event) {
-    if (isEventValid(player, a_event)) {
-        SKSE::log::info("Holding button...");
-        beginCharge(a_event);
-        return;
-    }
-
-    if (player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult) != currSpeed) {
-        player->AsActorValueOwner()->SetActorValue(RE::ActorValue::kSpeedMult, currSpeed);
-    }
-    
-    FnUpdateHeldStateActive fn = GetFnHash<FnUpdateHeldStateActive>().at(*(uintptr_t*)this);
-    if (fn) (this->*fn)(a_event);
-}*/
-
-
 void HookAttackBlockHandler::Hook() {
     REL::Relocation<uintptr_t> vtable{ RE::VTABLE_AttackBlockHandler[0] };
     FnProcessButton fn = SKSE::stl::unrestricted_cast<FnProcessButton>(vtable.write_vfunc(4, &HookAttackBlockHandler::ProcessButton));
     GetFnHash<FnProcessButton>().insert(std::pair<uintptr_t, FnProcessButton>(vtable.address(), fn));
-   // FnUpdateHeldStateActive fnUpdateHeldStateActive = SKSE::stl::unrestricted_cast<FnUpdateHeldStateActive>(vtable.write_vfunc(5, &HookAttackBlockHandler::UpdateHeldStateActive));
-    //GetFnHash<FnUpdateHeldStateActive>().insert(std::pair<uintptr_t, FnUpdateHeldStateActive>(vtable.address(), fnUpdateHeldStateActive));
 }
 
 void HookAttackBlockHandler::initialise() {
@@ -327,8 +348,6 @@ void HookAttackBlockHandler::initialise() {
     actionRightPowerAttack = (RE::BGSAction*)RE::TESForm::LookupByID(0x13383);
     actionLeftPowerAttack = (RE::BGSAction*)RE::TESForm::LookupByID(0x2e2f6);
     actionDualPowerAttack = (RE::BGSAction*)RE::TESForm::LookupByID(0x2e2f7);
-    actionLeftRelease = (RE::BGSAction*)RE::TESForm::LookupByID(0x13451);
-    actionRightRelease = (RE::BGSAction*)RE::TESForm::LookupByID(0x13454);
 
     SKSE::log::info("Data initialised...");
 
@@ -345,12 +364,14 @@ void HookAttackBlockHandler::loadSettings() {
     HookAttackBlockHandler::Settings::leftButton = ini.GetLongValue("Input", "leftButton", 280);
     HookAttackBlockHandler::Settings::rightButton = ini.GetLongValue("Input", "rightButton", 281);
     HookAttackBlockHandler::Settings::isMouseReverse = ini.GetBoolValue("Input", "reverseMouseButtons", false);
+    HookAttackBlockHandler::Settings::minHoldTime = ini.GetDoubleValue("Input", "minimumHoldTime", 0.44f);
     // Stamina drain rate
     // damage scale rate
 
     ini.SetLongValue("Input", "leftButton", HookAttackBlockHandler::Settings::leftButton);
     ini.SetLongValue("Input", "rightButton", HookAttackBlockHandler::Settings::rightButton);
-    ini.SetLongValue("Input", "reverseMouseButtons", HookAttackBlockHandler::Settings::isMouseReverse);
+    ini.SetBoolValue("Input", "reverseMouseButtons", HookAttackBlockHandler::Settings::isMouseReverse);
+    ini.SetDoubleValue("Gameplay", "minimumHoldTime", HookAttackBlockHandler::Settings::minHoldTime);
 
     (void)ini.SaveFile(path);
 }

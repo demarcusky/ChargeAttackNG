@@ -2,7 +2,6 @@
 #include "utils.h"
 
 RE::BSAudioManager* audioManager = NULL;
-
 RE::BGSSoundDescriptorForm* powerAttackSound;
 
 void initLog() {
@@ -58,6 +57,7 @@ SKSEPluginLoad(const SKSE::LoadInterface *skse) {
     SKSE::log::info("Game version : {}", skse->RuntimeVersion().string());
 
     SKSE::Init(skse);
+    SKSE::AllocTrampoline(1 << 10);
     
     HookAttackBlockHandler::loadSettings();
     SKSE::log::info("Settings loaded...");

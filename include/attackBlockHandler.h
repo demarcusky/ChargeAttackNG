@@ -3,7 +3,7 @@
 #include "utils.h"
 
 /*
-This class handles the trampoline hooks in the AttackBlockHandler.
+This class handles the trampoline hooks in the AttackBlockHandler class.
 */
 class HookAttackBlockHandler {
 public:
@@ -14,36 +14,34 @@ public:
         static inline uint64_t leftButton = 280;
         static inline uint64_t rightButton = 281;
         static inline bool isMouseReverse = false;
+        static inline float minHoldTime = 0.44f;
         // stamina drain rate
         // attack boost rate
     };
 
 	typedef void (HookAttackBlockHandler::* FnProcessButton) (RE::ButtonEvent*, void*);
-    typedef void (HookAttackBlockHandler::* FnUpdateHeldStateActive) (const RE::ButtonEvent*);
 
     static void initialise();
     static void loadSettings();
     void ProcessButton(RE::ButtonEvent* a_event, void* a_data);
-    void UpdateHeldStateActive(const RE::ButtonEvent* a_event);
 	static void Hook();
 private:
     static inline RE::PlayerCharacter* player = nullptr;
 
     // BGS Action IDs
-    static inline RE::BGSAction* actionRightAttack = nullptr;
-    static inline RE::BGSAction* actionLeftAttack = nullptr;
-    static inline RE::BGSAction* actionDualAttack = nullptr;
     static inline RE::BGSAction* actionRightPowerAttack = nullptr;
     static inline RE::BGSAction* actionLeftPowerAttack = nullptr;
     static inline RE::BGSAction* actionDualPowerAttack = nullptr;
-    static inline RE::BGSAction* actionLeftRelease = nullptr;
-    static inline RE::BGSAction* actionRightRelease = nullptr;
+    static inline RE::BGSAction* actionRightAttack = nullptr;
+    static inline RE::BGSAction* actionLeftAttack = nullptr;
+    static inline RE::BGSAction* actionDualAttack = nullptr;
 
+    bool isAttackEvent(const RE::ButtonEvent* a_event);
     void setIndication(bool isLeft, bool val);
-    void indicatePowerAttack(bool isLeft);
-    RE::BGSAction* getAttackAction(bool isLeft, uint64_t timeDiff, bool isDualWielding, bool isDualHeld, bool isPowerAttack);
+    RE::BGSAction* getAttackAction(bool isLeft, bool isDualAttack, float holdTime);
+
+    void charge(float holdTime);
     void performAction(RE::BGSAction* action, RE::Actor* actor);
     void processHold(RE::ButtonEvent *button);
     void processRelease(RE::ButtonEvent *button);
-    void beginCharge(float holdTime);
 };

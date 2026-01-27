@@ -7,4 +7,6 @@
 
 #include <spdlog/sinks/basic_file_sink.h>
 
+#define RELOCATION_OFFSET(SE, AE) REL::VariantOffset(SE, AE, 0).offset()
+
 using namespace std::literals;
