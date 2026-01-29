@@ -1,18 +1,13 @@
 #include <SimpleIni.h>
-#include "attackBlockHandler.h"
+#include "chargeAttackHandler.h"
 
 float leftHoldTime = 0.0f;
 float rightHoldTime = 0.0f;
-bool indicateLeft = false;
-bool indicateRight = false;
-bool isLeftNotCharge = false;
-bool isRightNotCharge = false;
-
 uint64_t leftRelease = 0;
 uint64_t rightRelease = 0;
 
 bool bCharging = false;
-float currSpeed = 0.0f;
+float kDamageMult = 1.0;
 
 template <typename T>
 std::unordered_map<uintptr_t, T>& GetFnHash() {
@@ -35,7 +30,7 @@ bool isPlayerAttacking(RE::PlayerCharacter* player) {
 }
 
 bool isWeaponValid(RE::TESObjectWEAP* weapon, bool isLeft) {
-    if (weapon == NULL) return false;
+    if (!weapon) return false;
     if (!weapon->IsWeapon() || weapon->IsBow() || weapon->IsCrossbow() || weapon->IsStaff()) return false;
     if (isLeft && (weapon->IsTwoHandedAxe() || weapon->IsTwoHandedSword())) return false;
     return true;
@@ -51,8 +46,8 @@ bool isDualWielding(RE::PlayerCharacter* player) {
 bool isLeftButton(const RE::ButtonEvent* a_event) {
     auto device = a_event->device.get();
     auto keyMask = a_event->GetIDCode();
-    if (device == RE::INPUT_DEVICE::kMouse && keyMask == (uint32_t)(HookAttackBlockHandler::Settings::isMouseReverse ? 0 : 1)) return true;
-    if (device == RE::INPUT_DEVICE::kGamepad && getKeycode(keyMask) == HookAttackBlockHandler::Settings::leftButton) return true;
+    if (device == RE::INPUT_DEVICE::kMouse && keyMask == (uint32_t)(ChargeAttackHandler::Settings::isMouseReverse ? 0 : 1)) return true;
+    if (device == RE::INPUT_DEVICE::kGamepad && getKeycode(keyMask) == ChargeAttackHandler::Settings::leftButton) return true;
     return false;
 }
 
@@ -61,7 +56,7 @@ bool isButtonEventValid(const RE::ButtonEvent* a_event) {
     auto keyMask = a_event->GetIDCode();
 
     if ((device != RE::INPUT_DEVICE::kMouse && device != RE::INPUT_DEVICE::kGamepad) ||
-        (device == RE::INPUT_DEVICE::kGamepad && getKeycode(keyMask) != HookAttackBlockHandler::Settings::leftButton && getKeycode(keyMask) != HookAttackBlockHandler::Settings::rightButton) ||
+        (device == RE::INPUT_DEVICE::kGamepad && getKeycode(keyMask) != ChargeAttackHandler::Settings::leftButton && getKeycode(keyMask) != ChargeAttackHandler::Settings::rightButton) ||
         (device == RE::INPUT_DEVICE::kMouse && keyMask != 0 && keyMask != 1))
     {
         return false;
@@ -176,90 +171,80 @@ HANDLER FUNCTIONS
 
 */
 
-bool HookAttackBlockHandler::isAttackEvent(const RE::ButtonEvent* a_event) {
+bool ChargeAttackHandler::isAttackEvent(const RE::ButtonEvent* a_event) {
     if (!isButtonEventValid(a_event)) return false;
     
     const auto gameUI = RE::UI::GetSingleton();
     const auto controlMap = RE::ControlMap::GetSingleton();
-    if (gameUI == NULL || controlMap == NULL || (gameUI && gameUI->GameIsPaused())) return false;
+    if (!gameUI|| !controlMap || gameUI->GameIsPaused() || gameUI->IsMenuOpen(RE::DialogueMenu::MENU_NAME) || gameUI->IsMenuOpen(RE::BarterMenu::MENU_NAME)) return false;
     
     bool isBlocking = false;
+    bool isStaggered = false;
     player->GetGraphVariableBool("IsBlocking", isBlocking);
-    if (player->IsInKillMove() || player->IsOnMount() || player->IsInMidair() || player->IsInRagdollState() || isPlayerAttacking(player) || isBlocking) {
+    player->GetGraphVariableBool("IsStaggering", isStaggered);
+    if (player->IsInKillMove() || player->IsOnMount() || player->IsInMidair() || player->IsInRagdollState() ||
+        isPlayerAttacking(player) || isBlocking || isStaggered || player->IsInWater())
+    {
         return false;
     }
 
     auto playerState = player->AsActorState();
-    if (playerState == NULL || (playerState && (playerState->GetWeaponState() != RE::WEAPON_STATE::kDrawn ||
+    if (!playerState || playerState->GetWeaponState() != RE::WEAPON_STATE::kDrawn ||
         playerState->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal ||
         playerState->GetKnockState() != RE::KNOCK_STATE_ENUM::kNormal ||
-        playerState->GetFlyState() != RE::FLY_STATE::kNone)))
+        playerState->GetFlyState() != RE::FLY_STATE::kNone)
     {
         return false;
     }
 
     auto isLeft = isLeftButton(a_event);
-    auto weapon = isLeft ? reinterpret_cast<RE::TESObjectWEAP*>(player->GetEquippedObject(true)) : reinterpret_cast<RE::TESObjectWEAP*>(player->GetEquippedObject(false));
+    auto weapon = player->GetEquippedObject(isLeft)->As<RE::TESObjectWEAP>();
     return isWeaponValid(weapon, isLeft);
 }
 
-void HookAttackBlockHandler::setIndication(bool isLeft, bool val) {
-    if (isLeft) {
-        indicateLeft = val;
-    } else {
-        indicateRight = val;
-    }
-}
+void ChargeAttackHandler::performPowerAttack(bool isDualAttack) {
+    std::string animationEvent;
 
-RE::BGSAction* HookAttackBlockHandler::getAttackAction(bool isLeft, bool isDualAttack, float holdTime) {
-    bool isPowerAttack = holdTime >= Settings::minHoldTime;
-    if (isDualAttack) return isPowerAttack ? actionDualPowerAttack : actionDualAttack;
-    if (isLeft) return isPowerAttack  ? actionLeftPowerAttack : actionLeftAttack;
-    return isPowerAttack ? actionRightPowerAttack : actionRightAttack;
-}
-
-void HookAttackBlockHandler::charge(float holdTime) {
-    if (holdTime < Settings::minHoldTime) return;
+    animationEvent = "attackPowerStanding";
+    //damageMultiplier = 1.2f;
     
-    if (!bCharging) {
-        bCharging = true;
-        SKSE::log::info("Charging...");
+    // Store damage multiplier for hit event
+    //StoreAttackData(kDamageMult);
 
-        auto slowSpell = CreateSlowSpell();
-        auto caster = player->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
-        caster->CastSpellImmediate(
-            slowSpell,
-            false,
-            player,
-            1.0f,
-            false,
-            0.0f,
-            nullptr
-        );
+    if (isDualAttack) {
+        animationEvent = "attackPowerDual";
+        kDamageMult += 0.5f;
+    } else {
+        animationEvent = "attackPowerStanding";
+    }
+    
+    player->NotifyAnimationGraph(animationEvent);
+}
+
+void ChargeAttackHandler::performNormalAttack(bool isLeft, bool isDualAttack) {
+    SKSE::log::info("Executing normal attack");
+        
+    if (isDualAttack) {
+        // Dual wield normal attack
+        player->NotifyAnimationGraph("attackStart");
+    } else {
+        // Single weapon normal attack
+        std::string animEvent = isLeft ? "attackStartLeft" : "attackStartRight";
+        player->NotifyAnimationGraph(animEvent);
     }
 }
 
-void HookAttackBlockHandler::performAction(RE::BGSAction* action, RE::Actor* actor) {
-    if (tasks == NULL) {
-        SKSE::log::info("ERROR: Tasks not initialised...");
-        return;
-    }
+void ChargeAttackHandler::charge(float holdTime) {
+    if (holdTime < Settings::minHoldTime) return;
 
-    tasks->AddTask([action, actor]() {
-        std::unique_ptr<RE::TESActionData> data(RE::TESActionData::Create());
-        data->source = RE::NiPointer<RE::TESObjectREFR>(actor);
-        data->action = action;
+    // damage stamina
+    player->AsActorValueOwner()->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kStamina, -0.5f);
 
-        typedef bool func_t(RE::TESActionData*);
-        REL::Relocation<func_t> func{RELOCATION_ID(40551, 41557)};
-        bool success = func(data.get());
-        if (!success) {
-            SKSE::log::info("Action failed: {}", (void*)action);
-        }
-    });
+    // increase damage
+    kDamageMult += 0.1f;
 }
 
-void HookAttackBlockHandler::processHold(RE::ButtonEvent *button) {
+void ChargeAttackHandler::processHold(RE::ButtonEvent *button) {
     auto isLeft = isLeftButton(button);
     if (isLeft) {
         leftHoldTime = button->HeldDuration();
@@ -269,14 +254,18 @@ void HookAttackBlockHandler::processHold(RE::ButtonEvent *button) {
 
     float holdTime = isLeft ? leftHoldTime : rightHoldTime;
     if (!bCharging) {
-        setIndication(isLeft, true);
-        SKSE::log::info("Initiating charge attack...");
-    }
-    charge(holdTime);
+        bCharging = true;
 
+        // Apply slow effect
+        auto slowSpell = CreateSlowSpell();
+        auto caster = player->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
+        caster->CastSpellImmediate(slowSpell, false, player, 1.0f, false, 0.0f, nullptr);
+    } else {
+        charge(holdTime);
+    }
 }
 
-void HookAttackBlockHandler::processRelease(RE::ButtonEvent *button) {
+void ChargeAttackHandler::processRelease(RE::ButtonEvent *button) {
     auto isLeft = isLeftButton(button);
 
     auto holdDuration = isLeft ? leftHoldTime : rightHoldTime;
@@ -294,29 +283,29 @@ void HookAttackBlockHandler::processRelease(RE::ButtonEvent *button) {
     bool isDualAttack = (timeDiff <= DUAL_ATTACK_WINDOW) && isDualWielding(player) && (leftRelease > 0 && rightRelease > 0);
     
     if (!isDualAttack || (isDualAttack && !isLeft)) {
-        SKSE::log::info("Starting attack action... (dual: {})", isDualAttack);
-        
-        auto attackAction = getAttackAction(isLeft, isDualAttack, holdDuration);
-        performAction(attackAction, player);
-        
         if (isDualAttack) {
             leftRelease = 0;
             rightRelease = 0;
         }
+
+        if (bCharging) {
+            performPowerAttack(isDualAttack);
+        } else {
+            performNormalAttack(isLeft, isDualAttack);
+        }
     }
 
     // Cleanup
-    setIndication(isLeft, false);
     if (bCharging) {
         bCharging = false;
 
-        RE::BSPointerHandle<RE::Actor> nullHandle;
         // remove slowdown
+        RE::BSPointerHandle<RE::Actor> nullHandle;
         player->GetMagicTarget()->DispelEffect(CreateSlowSpell(), nullHandle);
     }
 }
 
-void HookAttackBlockHandler::ProcessButton(RE::ButtonEvent* a_event, void* a_data) {
+void ChargeAttackHandler::ProcessButton(RE::ButtonEvent* a_event, void* a_data) {
     if (isAttackEvent(a_event)) {
         if (a_event->IsHeld()) {
             SKSE::log::info("Button held...");
@@ -332,45 +321,40 @@ void HookAttackBlockHandler::ProcessButton(RE::ButtonEvent* a_event, void* a_dat
     if (fn) (this->*fn)(a_event, a_data);
 }
 
-void HookAttackBlockHandler::Hook() {
+void ChargeAttackHandler::Hook() {
     REL::Relocation<uintptr_t> vtable{ RE::VTABLE_AttackBlockHandler[0] };
-    FnProcessButton fn = SKSE::stl::unrestricted_cast<FnProcessButton>(vtable.write_vfunc(4, &HookAttackBlockHandler::ProcessButton));
+    FnProcessButton fn = SKSE::stl::unrestricted_cast<FnProcessButton>(vtable.write_vfunc(4, &ChargeAttackHandler::ProcessButton));
     GetFnHash<FnProcessButton>().insert(std::pair<uintptr_t, FnProcessButton>(vtable.address(), fn));
 }
 
-void HookAttackBlockHandler::initialise() {
+void ChargeAttackHandler::initialise() {
     player = RE::PlayerCharacter::GetSingleton();
-
-    actionRightAttack = (RE::BGSAction*)RE::TESForm::LookupByID(0x13005);
-    actionLeftAttack = (RE::BGSAction*)RE::TESForm::LookupByID(0x13004);
-    actionDualAttack = (RE::BGSAction*)RE::TESForm::LookupByID(0x50c96);
-    actionRightPowerAttack = (RE::BGSAction*)RE::TESForm::LookupByID(0x13383);
-    actionLeftPowerAttack = (RE::BGSAction*)RE::TESForm::LookupByID(0x2e2f6);
-    actionDualPowerAttack = (RE::BGSAction*)RE::TESForm::LookupByID(0x2e2f7);
+    tasks = SKSE::GetTaskInterface();
+    loadSettings();
 
     SKSE::log::info("Data initialised...");
-
     Hook();
 }
 
-void HookAttackBlockHandler::loadSettings() {
+void ChargeAttackHandler::loadSettings() {
     constexpr auto path = L"Data/SKSE/Plugins/ChargeAttackNG.ini";
 
     CSimpleIniA ini;
     ini.SetUnicode();
     ini.LoadFile(path);
 
-    HookAttackBlockHandler::Settings::leftButton = ini.GetLongValue("Input", "leftButton", 280);
-    HookAttackBlockHandler::Settings::rightButton = ini.GetLongValue("Input", "rightButton", 281);
-    HookAttackBlockHandler::Settings::isMouseReverse = ini.GetBoolValue("Input", "reverseMouseButtons", false);
-    HookAttackBlockHandler::Settings::minHoldTime = ini.GetDoubleValue("Input", "minimumHoldTime", 0.44f);
+    ChargeAttackHandler::Settings::leftButton = ini.GetLongValue("Input", "leftButton", 280);
+    ChargeAttackHandler::Settings::rightButton = ini.GetLongValue("Input", "rightButton", 281);
+    ChargeAttackHandler::Settings::isMouseReverse = ini.GetBoolValue("Input", "reverseMouseButtons", false);
+    ChargeAttackHandler::Settings::minHoldTime = ini.GetDoubleValue("Input", "minimumHoldTime", 0.44f);
     // Stamina drain rate
     // damage scale rate
+    // animation playback
 
-    ini.SetLongValue("Input", "leftButton", HookAttackBlockHandler::Settings::leftButton);
-    ini.SetLongValue("Input", "rightButton", HookAttackBlockHandler::Settings::rightButton);
-    ini.SetBoolValue("Input", "reverseMouseButtons", HookAttackBlockHandler::Settings::isMouseReverse);
-    ini.SetDoubleValue("Gameplay", "minimumHoldTime", HookAttackBlockHandler::Settings::minHoldTime);
+    ini.SetLongValue("Input", "leftButton", ChargeAttackHandler::Settings::leftButton);
+    ini.SetLongValue("Input", "rightButton", ChargeAttackHandler::Settings::rightButton);
+    ini.SetBoolValue("Input", "reverseMouseButtons", ChargeAttackHandler::Settings::isMouseReverse);
+    ini.SetDoubleValue("Gameplay", "minimumHoldTime", ChargeAttackHandler::Settings::minHoldTime);
 
     (void)ini.SaveFile(path);
 }

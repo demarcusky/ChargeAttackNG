@@ -1,8 +1,5 @@
-#include "attackBlockHandler.h"
+#include "chargeAttackHandler.h"
 #include "utils.h"
-
-RE::BSAudioManager* audioManager = NULL;
-RE::BGSSoundDescriptorForm* powerAttackSound;
 
 void initLog() {
     auto logsFolder = SKSE::log::log_directory();
@@ -25,27 +22,7 @@ Main functionality is called after all initial data is loaded.
 */
 void onMessage(SKSE::MessagingInterface::Message* msg) {
     if (msg->type == SKSE::MessagingInterface::kDataLoaded) {
-        powerAttackSound = (RE::BGSSoundDescriptorForm*)RE::TESForm::LookupByID(0x10eb7a);
-
-        audioManager = RE::BSAudioManager::GetSingleton();
-
-        HookAttackBlockHandler::initialise();
-
-        /*if (current ue = ue->attackPowerStart) {
-                if (p.iscrouching || p.isSprinting || p.isRidingHorse) {
-                    trigger vanilla actions
-                }
- 
-                while player is holding power attack button {
-                    slow movement
-                    drain stamina at a fixed rate (possibly customisable with MCM?)
-                    scale power attack damage at a fixed rate (possibly customisable with MCM?)
-                    vibration when charging??
-                }
-
-                play attack animation
-                settings to adjust when the charge occurs during animation? should happen in v2
-            }*/ 
+        ChargeAttackHandler::initialise();
     }
 }
 
@@ -58,11 +35,7 @@ SKSEPluginLoad(const SKSE::LoadInterface *skse) {
 
     SKSE::Init(skse);
     SKSE::AllocTrampoline(1 << 10);
-    
-    HookAttackBlockHandler::loadSettings();
-    SKSE::log::info("Settings loaded...");
 
-    HookAttackBlockHandler::tasks = SKSE::GetTaskInterface();
 	SKSE::GetMessagingInterface()->RegisterListener(onMessage);
 
     return true;
